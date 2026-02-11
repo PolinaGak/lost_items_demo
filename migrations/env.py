@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from app.core.config import config as app_config
 from app.database import Base
 
-from app.models import User, Station, LostItem, FoundItem, Match
+from app.models import User, Station, LostItem, FoundItem, Match, TransferPoint, Line
 
 config = context.config
 
