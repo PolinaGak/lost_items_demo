@@ -1,30 +1,29 @@
-import os
-import json
-from typing import List, Optional, Dict, Any
-from dataclasses import dataclass, field
-from pathlib import Path
+from pydantic_settings import BaseSettings
+from typing import List
 
-from dotenv import load_dotenv
+class Config(BaseSettings):
+    DEBUG: bool = True
 
-load_dotenv()
+    # PostgreSQL
+    POSTGRES_DB: str = "lost_items_db"
+    POSTGRES_USER: str = "test_user"
+    POSTGRES_PASSWORD: str = "test_pwd"
+    POSTGRES_HOST: str = "localhost"
+    POSTGRES_PORT: int = 5432
 
+    # Telegram Bot
+    BOT_TOKEN: str = ""
 
-@dataclass
-class Config:
-    POSTGRES_DB: str
-    POSTGRES_USER: str
-    POSTGRES_PASSWORD: str
-    POSTGRES_HOST: str
-    POSTGRES_PORT: int
+    # FastAPI
+    API_HOST: str = "0.0.0.0"
+    API_PORT: int = 8000
+    SECRET_KEY: str = "secret_key"
 
-    BOT_TOKEN: str
+    # PGVector
+    VECTOR_DIMENSION: int = 384
 
-    API_HOST: str
-    API_PORT: int
-    SECRET_KEY: str
-
-    VECTOR_DIMENSION: int
-
+    # Admin IDs
+    ADMIN_IDS: List[int] = []
 
     @property
     def DATABASE_URL(self) -> str:
@@ -34,5 +33,9 @@ class Config:
     def DATABASE_URL_ASYNC(self) -> str:
         return f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
 
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+        extra = "ignore"
 
 config = Config()

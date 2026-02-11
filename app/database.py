@@ -1,5 +1,5 @@
 from typing import AsyncGenerator
-
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import create_engine, text
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -13,6 +13,7 @@ from app.core.config import config
 
 class Base(DeclarativeBase):
     __abstract__ = True
+    Vector = Vector
 
 
 async_engine = create_async_engine(
@@ -39,7 +40,6 @@ SyncSessionLocal = sessionmaker(sync_engine)
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
-
     async with AsyncSessionLocal() as session:
         try:
             yield session
@@ -64,8 +64,7 @@ async def init_db() -> None:
     print("Synthetic data loaded")
 
 
-
 async def close_db() -> None:
     await async_engine.dispose()
     sync_engine.dispose()
-    print("✅ Database connections closed")
+    print("Database connections closed")
