@@ -1,7 +1,7 @@
 import asyncio
 import random
 from datetime import datetime, timedelta
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import AsyncSessionLocal
@@ -11,10 +11,6 @@ from app.models import (
 )
 from app.services.embedding import get_embedding
 from app.services.matcher import find_similar_items
-
-# ============================================================================
-# ДАННЫЕ ЛИНИЙ
-# ============================================================================
 
 LINES_DATA = [
     {"id": 1, "name": "Сокольническая", "color": "Красный", "number": 1},
@@ -32,12 +28,7 @@ LINES_DATA = [
     {"id": 14, "name": "Московское центральное кольцо (МЦК)", "color": "Белый с красным", "number": 14},
 ]
 
-# ============================================================================
-# ДАННЫЕ СТАНЦИЙ (РАСШИРЕННЫЕ)
-# ============================================================================
-
 STATIONS_DATA = [
-    # Сокольническая линия (1)
     {"name": "Сокольники", "line_id": 1, "order": 1},
     {"name": "Красные Ворота", "line_id": 1, "order": 2},
     {"name": "Чистые пруды", "line_id": 1, "order": 3},
@@ -58,8 +49,6 @@ STATIONS_DATA = [
     {"name": "Прокшино", "line_id": 1, "order": 18},
     {"name": "Ольховая", "line_id": 1, "order": 19},
     {"name": "Коммунарка", "line_id": 1, "order": 20},
-
-    # Замоскворецкая линия (2)
     {"name": "Речной вокзал", "line_id": 2, "order": 1},
     {"name": "Водный стадион", "line_id": 2, "order": 2},
     {"name": "Войковская", "line_id": 2, "order": 3},
@@ -79,8 +68,6 @@ STATIONS_DATA = [
     {"name": "Кантемировская", "line_id": 2, "order": 17},
     {"name": "Царицыно", "line_id": 2, "order": 18},
     {"name": "Орехово", "line_id": 2, "order": 19},
-
-    # Арбатско-Покровская линия (3)
     {"name": "Щёлковская", "line_id": 3, "order": 1},
     {"name": "Первомайская", "line_id": 3, "order": 2},
     {"name": "Измайловская", "line_id": 3, "order": 3},
@@ -99,8 +86,6 @@ STATIONS_DATA = [
     {"name": "Молодёжная", "line_id": 3, "order": 16},
     {"name": "Крылатское", "line_id": 3, "order": 17},
     {"name": "Строгино", "line_id": 3, "order": 18},
-
-    # Кольцевая линия (5)
     {"name": "Киевская", "line_id": 5, "order": 1},
     {"name": "Краснопресненская", "line_id": 5, "order": 2},
     {"name": "Белорусская", "line_id": 5, "order": 3},
@@ -113,8 +98,6 @@ STATIONS_DATA = [
     {"name": "Добрынинская", "line_id": 5, "order": 10},
     {"name": "Октябрьская", "line_id": 5, "order": 11},
     {"name": "Парк культуры", "line_id": 5, "order": 12},
-
-    # Калужско-Рижская линия (6)
     {"name": "Медведково", "line_id": 6, "order": 1},
     {"name": "Бабушкинская", "line_id": 6, "order": 2},
     {"name": "Свиблово", "line_id": 6, "order": 3},
@@ -128,8 +111,6 @@ STATIONS_DATA = [
     {"name": "Китай-город", "line_id": 6, "order": 11},
     {"name": "Третьяковская", "line_id": 6, "order": 12},
     {"name": "Октябрьская", "line_id": 6, "order": 13},
-
-    # Таганско-Краснопресненская линия (7)
     {"name": "Планерная", "line_id": 7, "order": 1},
     {"name": "Сходненская", "line_id": 7, "order": 2},
     {"name": "Тушинская", "line_id": 7, "order": 3},
@@ -144,8 +125,6 @@ STATIONS_DATA = [
     {"name": "Китай-город", "line_id": 7, "order": 12},
     {"name": "Таганская", "line_id": 7, "order": 13},
     {"name": "Пролетарская", "line_id": 7, "order": 14},
-
-    # Серпуховско-Тимирязевская линия (9)
     {"name": "Алтуфьево", "line_id": 9, "order": 1},
     {"name": "Бибирево", "line_id": 9, "order": 2},
     {"name": "Отрадное", "line_id": 9, "order": 3},
@@ -163,71 +142,23 @@ STATIONS_DATA = [
     {"name": "Тульская", "line_id": 9, "order": 15},
 ]
 
-# ============================================================================
-# ДАННЫЕ ПЕРЕСАДОЧНЫХ УЗЛОВ
-# ============================================================================
-
 TRANSFERS_DATA = [
-    # Китай-город (6 ↔ 7)
-    {"name1": "Китай-город", "line1": 6, "name2": "Китай-город", "line2": 7,
-     "type": "cross-platform", "time": 2},
-
-    # Третьяковская (6 ↔ 8)
-    {"name1": "Третьяковская", "line1": 6, "name2": "Третьяковская", "line2": 8,
-     "type": "underground", "time": 3},
-
-    # Парк культуры (1 ↔ 5)
-    {"name1": "Парк культуры", "line1": 1, "name2": "Парк культуры", "line2": 5,
-     "type": "underground", "time": 2},
-
-    # Библиотека им. Ленина / Арбатская / Боровицкая / Александровский сад
-    {"name1": "Библиотека им. Ленина", "line1": 1, "name2": "Арбатская", "line2": 3,
-     "type": "underground", "time": 5},
-    {"name1": "Библиотека им. Ленина", "line1": 1, "name2": "Боровицкая", "line2": 9,
-     "type": "underground", "time": 4},
-
-    # Белорусская (2 ↔ 5)
-    {"name1": "Белорусская", "line1": 2, "name2": "Белорусская", "line2": 5,
-     "type": "underground", "time": 2},
-
-    # Курская (3 ↔ 5)
-    {"name1": "Курская", "line1": 3, "name2": "Курская", "line2": 5,
-     "type": "underground", "time": 3},
-
-    # Таганская / Марксистская (5 ↔ 7 ↔ 8)
-    {"name1": "Таганская", "line1": 5, "name2": "Таганская", "line2": 7,
-     "type": "underground", "time": 3},
-    {"name1": "Таганская", "line1": 5, "name2": "Марксистская", "line2": 8,
-     "type": "underground", "time": 4},
-
-    # Проспект Мира (5 ↔ 6)
-    {"name1": "Проспект Мира", "line1": 5, "name2": "Проспект Мира", "line2": 6,
-     "type": "underground", "time": 2},
-
-    # Комсомольская (5 ↔ 1)
-    {"name1": "Комсомольская", "line1": 5, "name2": "Комсомольская", "line2": 1,
-     "type": "underground", "time": 2},
-
-    # Павелецкая (2 ↔ 5)
-    {"name1": "Павелецкая", "line1": 2, "name2": "Павелецкая", "line2": 5,
-     "type": "underground", "time": 3},
-
-    # Добрынинская / Серпуховская (5 ↔ 9)
-    {"name1": "Добрынинская", "line1": 5, "name2": "Серпуховская", "line2": 9,
-     "type": "underground", "time": 3},
-
-    # Октябрьская (5 ↔ 6)
-    {"name1": "Октябрьская", "line1": 5, "name2": "Октябрьская", "line2": 6,
-     "type": "underground", "time": 2},
-
-    # Полежаевская / Хорошёвская (7 ↔ 11)
-    {"name1": "Полежаевская", "line1": 7, "name2": "Хорошёвская", "line2": 11,
-     "type": "underground", "time": 2},
+    {"name1": "Китай-город", "line1": 6, "name2": "Китай-город", "line2": 7, "type": "cross-platform", "time": 2},
+    {"name1": "Третьяковская", "line1": 6, "name2": "Третьяковская", "line2": 8, "type": "underground", "time": 3},
+    {"name1": "Парк культуры", "line1": 1, "name2": "Парк культуры", "line2": 5, "type": "underground", "time": 2},
+    {"name1": "Библиотека им. Ленина", "line1": 1, "name2": "Арбатская", "line2": 3, "type": "underground", "time": 5},
+    {"name1": "Библиотека им. Ленина", "line1": 1, "name2": "Боровицкая", "line2": 9, "type": "underground", "time": 4},
+    {"name1": "Белорусская", "line1": 2, "name2": "Белорусская", "line2": 5, "type": "underground", "time": 2},
+    {"name1": "Курская", "line1": 3, "name2": "Курская", "line2": 5, "type": "underground", "time": 3},
+    {"name1": "Таганская", "line1": 5, "name2": "Таганская", "line2": 7, "type": "underground", "time": 3},
+    {"name1": "Таганская", "line1": 5, "name2": "Марксистская", "line2": 8, "type": "underground", "time": 4},
+    {"name1": "Проспект Мира", "line1": 5, "name2": "Проспект Мира", "line2": 6, "type": "underground", "time": 2},
+    {"name1": "Комсомольская", "line1": 5, "name2": "Комсомольская", "line2": 1, "type": "underground", "time": 2},
+    {"name1": "Павелецкая", "line1": 2, "name2": "Павелецкая", "line2": 5, "type": "underground", "time": 3},
+    {"name1": "Добрынинская", "line1": 5, "name2": "Серпуховская", "line2": 9, "type": "underground", "time": 3},
+    {"name1": "Октябрьская", "line1": 5, "name2": "Октябрьская", "line2": 6, "type": "underground", "time": 2},
+    {"name1": "Полежаевская", "line1": 7, "name2": "Хорошёвская", "line2": 11, "type": "underground", "time": 2},
 ]
-
-# ============================================================================
-# ДАННЫЕ НАЙДЕННЫХ ВЕЩЕЙ
-# ============================================================================
 
 FOUND_ITEMS_DATA = [
     {"description": "Беспроводные наушники в белом кейсе, на кейсе царапина, внутри левый наушник"},
@@ -255,10 +186,6 @@ FOUND_ITEMS_DATA = [
     {"description": "iPad 9 поколения, серый космос, в чёрном чехле-книжке"},
 ]
 
-# ============================================================================
-# ДАННЫЕ ПОТЕРЯННЫХ ВЕЩЕЙ (ЗАЯВКИ)
-# ============================================================================
-
 LOST_ITEMS_DATA = [
     {"description": "Потерял белые наушники эйрподс, кейс белый, наушник левый не работает"},
     {"description": "Оставила в вагоне синюю вязаную шапку с пушистым помпоном"},
@@ -276,29 +203,14 @@ LOST_ITEMS_DATA = [
     {"description": "Оставила термос синий в вагоне"},
 ]
 
-
-# ============================================================================
-# ФУНКЦИИ ЗАПОЛНЕНИЯ
-# ============================================================================
-
 async def create_lines(session: AsyncSession):
-    """Создание справочника линий."""
-    print("Создаю линии метро...")
-
     for line_data in LINES_DATA:
         line = Line(**line_data)
         session.add(line)
-
     await session.commit()
-    print(f"Создано {len(LINES_DATA)} линий")
-
 
 async def create_stations(session: AsyncSession):
-    """Создание справочника станций."""
-    print("Создаю станции метро...")
-
     station_map = {}
-
     for station_data in STATIONS_DATA:
         station = Station(
             name=station_data["name"],
@@ -308,32 +220,21 @@ async def create_stations(session: AsyncSession):
         session.add(station)
         await session.flush()
         station_map[(station_data["name"], station_data["line_id"])] = station.id
-
     await session.commit()
-    print(f"Создано {len(STATIONS_DATA)} станций")
-
     return station_map
 
-
 async def create_transfers(session: AsyncSession, station_map):
-    """Создание пересадочных узлов."""
-    print("Создаю пересадочные узлы...")
-
     transfers_created = 0
-
     for transfer_data in TRANSFERS_DATA:
         station_id_1 = station_map.get((transfer_data["name1"], transfer_data["line1"]))
         station_id_2 = station_map.get((transfer_data["name2"], transfer_data["line2"]))
-
         if station_id_1 and station_id_2:
-            # Проверяем, нет ли уже такой пересадки
             existing = await session.execute(
                 select(TransferPoint).where(
                     TransferPoint.station_id_1 == station_id_1,
                     TransferPoint.station_id_2 == station_id_2
                 )
             )
-
             if not existing.scalar_one_or_none():
                 transfer = TransferPoint(
                     station_id_1=station_id_1,
@@ -347,24 +248,15 @@ async def create_transfers(session: AsyncSession, station_map):
                 )
                 session.add(transfer)
                 transfers_created += 1
-
     await session.commit()
-    print(f"Создано {transfers_created} пересадочных узлов")
-
 
 async def create_found_items(session: AsyncSession, station_ids):
-    """Создание найденных вещей."""
-    print("Создаю найденные вещи...")
-
     today = datetime.now().date()
-
     for item_data in FOUND_ITEMS_DATA:
         days_ago = random.randint(0, 30)
         found_date = today - timedelta(days=days_ago)
         station_id = random.choice(station_ids)
-
         embedding = await get_embedding(item_data["description"])
-
         item = FoundItem(
             description=item_data["description"],
             embedding=embedding,
@@ -373,47 +265,30 @@ async def create_found_items(session: AsyncSession, station_ids):
             source="metro"
         )
         session.add(item)
-
     await session.commit()
-    print(f"Создано {len(FOUND_ITEMS_DATA)} найденных вещей")
-
     result = await session.execute(select(FoundItem))
     return result.scalars().all()
 
-
 async def create_test_user(session: AsyncSession):
-    """Создание тестового пользователя."""
-    print("Создаю тестового пользователя...")
-
     user = User(
         telegram_id=123456789,
         token="test_user_token_123456"
     )
     session.add(user)
     await session.commit()
-
-    print(f"Создан пользователь с ID: {user.id}, telegram_id: {user.telegram_id}")
     return user
 
-
 async def create_lost_items(session: AsyncSession, user, station_ids):
-    """Создание потерянных вещей (заявок)."""
-    print("Создаю заявки на потерянные вещи...")
-
     today = datetime.now().date()
     statuses = ["pending", "matched", "notified", "closed"]
     weights = [0.4, 0.3, 0.2, 0.1]
-
     lost_items = []
-
     for item_data in LOST_ITEMS_DATA:
         days_ago = random.randint(0, 14)
         loss_date = today - timedelta(days=days_ago)
         station_id = random.choice(station_ids)
         status = random.choices(statuses, weights=weights)[0]
-
         embedding = await get_embedding(item_data["description"])
-
         item = LostItem(
             user_id=user.id,
             description=item_data["description"],
@@ -426,40 +301,28 @@ async def create_lost_items(session: AsyncSession, user, station_ids):
         )
         session.add(item)
         lost_items.append(item)
-
     await session.commit()
-    print(f"Создано {len(LOST_ITEMS_DATA)} заявок")
-
     return lost_items
 
-
 async def create_matches(session: AsyncSession, lost_items, found_items):
-    """Создание сопоставлений между потерянными и найденными вещами."""
-    print("Создаю сопоставления...")
-
     matches_created = 0
-
     for lost_item in lost_items:
         if lost_item.status not in ["matched", "notified", "closed"]:
             continue
-
         similar = await find_similar_items(
             session,
             lost_item.embedding,
             limit=1,
             similarity_threshold=0.7
         )
-
         if similar:
             found_item, similarity = similar[0]
-
             existing = await session.execute(
                 select(Match).where(
                     Match.lost_item_id == lost_item.id,
                     Match.found_item_id == found_item.id
                 )
             )
-
             if not existing.scalar_one_or_none():
                 match = Match(
                     lost_item_id=lost_item.id,
@@ -467,65 +330,29 @@ async def create_matches(session: AsyncSession, lost_items, found_items):
                     similarity=similarity,
                     status="sent" if lost_item.status == "notified" else "pending"
                 )
-
                 if lost_item.status == "notified":
                     match.notified_at = datetime.now() - timedelta(hours=random.randint(1, 48))
-
                 if lost_item.status == "closed":
                     match.status = "accepted"
                     match.notified_at = datetime.now() - timedelta(days=random.randint(1, 7))
                     match.responded_at = match.notified_at + timedelta(hours=random.randint(1, 24))
-
                 session.add(match)
                 matches_created += 1
-
     await session.commit()
-    print(f"Создано {matches_created} сопоставлений")
-
-
-# ============================================================================
-# ОСНОВНАЯ ФУНКЦИЯ
-# ============================================================================
 
 async def generate_synthetic_data():
-    """Основная функция наполнения БД синтетическими данными."""
-    print("\n" + "=" * 60)
-    print("НАЧАЛО ЗАГРУЗКИ СИНТЕТИЧЕСКИХ ДАННЫХ")
-    print("=" * 60 + "\n")
-
     async with AsyncSessionLocal() as session:
-        # Проверяем, есть ли уже данные
         result = await session.execute(select(Line).limit(1))
         if result.scalar_one_or_none():
-            print("База данных уже содержит данные. Пропускаем...")
             return
-
-        # 1. Линии
         await create_lines(session)
-
-        # 2. Станции
         station_map = await create_stations(session)
         station_ids = list(station_map.values())
-
-        # 3. Пересадки
         await create_transfers(session, station_map)
-
-        # 4. Найденные вещи
         found_items = await create_found_items(session, station_ids)
-
-        # 5. Тестовый пользователь
         user = await create_test_user(session)
-
-        # 6. Потерянные вещи
         lost_items = await create_lost_items(session, user, station_ids)
-
-        # 7. Сопоставления
         await create_matches(session, lost_items, found_items)
-
-    print("\n" + "=" * 60)
-    print("ЗАГРУЗКА СИНТЕТИЧЕСКИХ ДАННЫХ ЗАВЕРШЕНА")
-    print("=" * 60 + "\n")
-
 
 if __name__ == "__main__":
     asyncio.run(generate_synthetic_data())

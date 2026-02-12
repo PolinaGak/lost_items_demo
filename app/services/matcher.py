@@ -22,10 +22,8 @@ async def find_similar_items(
     - станциям (исходная + пересадки + вся линия)
     - дате (loss_date ± days_delta)
     """
-    # Базовый запрос
     stmt = select(FoundItem)
 
-    # 1. ВЕКТОРНЫЙ ПОИСК (обязательно)
     embedding_str = '[' + ','.join(map(str, query_embedding)) + ']'
     similarity_expr = literal_column(
         f"1 - (embedding <=> '{embedding_str}')"
@@ -34,12 +32,10 @@ async def find_similar_items(
     stmt = stmt.add_columns(similarity_expr.label('similarity'))
     stmt = stmt.where(similarity_expr > similarity_threshold)
 
-    # 2. ФИЛЬТР ПО СТАНЦИЯМ (если указана станция)
     if station_id:
         params = await build_search_query(session, station_id, loss_date, days_delta)
         stmt = stmt.where(FoundItem.station_id.in_(params["station_ids"]))
 
-    # 3. ФИЛЬТР ПО ДАТЕ (если указана дата)
     if loss_date:
         date_range = await build_search_query(session, station_id, loss_date, days_delta)
         stmt = stmt.where(
@@ -49,7 +45,6 @@ async def find_similar_items(
             )
         )
 
-    # Сортировка по похожести
     stmt = stmt.order_by(similarity_expr.desc()).limit(limit)
 
     result = await session.execute(stmt)
@@ -69,9 +64,6 @@ async def find_similar_items_by_name(
         limit: int = 5,
         similarity_threshold: float = 0.6
 ) -> List[Tuple[FoundItem, float]]:
-    """
-    Удобная обёртка: поиск по названию станции вместо ID.
-    """
     from app.models import Station
 
     station = await session.execute(

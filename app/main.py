@@ -1,9 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
 from app.database import init_db, close_db
 from app.api.routes import router
-from app.core.config import config
 
 app = FastAPI(
     title="Lost Items API",
@@ -13,7 +11,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost", "https://t.me"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

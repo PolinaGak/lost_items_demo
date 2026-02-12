@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-WORKDIR /app
+WORKDIR /lost_items_demo
 
 RUN apt-get update && apt-get install -y \
     postgresql-client \
@@ -9,4 +9,4 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY ./app /app
+COPY . .

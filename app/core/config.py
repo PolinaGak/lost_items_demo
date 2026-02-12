@@ -3,25 +3,21 @@ from typing import List
 
 class Config(BaseSettings):
     DEBUG: bool = True
-
     # PostgreSQL
     POSTGRES_DB: str = "lost_items_db"
     POSTGRES_USER: str = "test_user"
     POSTGRES_PASSWORD: str = "test_pwd"
     POSTGRES_HOST: str = "localhost"
     POSTGRES_PORT: int = 5432
-
     # Telegram Bot
     BOT_TOKEN: str = ""
-
     # FastAPI
-    API_HOST: str = "0.0.0.0"
-    API_PORT: int = 8000
-    SECRET_KEY: str = "secret_key"
-
+    API_HOST: str
+    API_PORT: int
+    SECRET_KEY: str
+    API_BASE_URL: str
     # PGVector
     VECTOR_DIMENSION: int = 384
-
     # Admin IDs
     ADMIN_IDS: List[int] = []
 

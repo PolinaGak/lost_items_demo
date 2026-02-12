@@ -1,25 +1,17 @@
 import asyncio
 import logging
-from datetime import datetime, timedelta
-
+from datetime import datetime, timedelta, date
+import httpx
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
-    Message, CallbackQuery,
-    ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove,
+    Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove,
     InlineKeyboardMarkup, InlineKeyboardButton
 )
-from sqlalchemy import select
-
 from app.core.config import config
-from app.database import AsyncSessionLocal, init_db, close_db
-from app.models import User, Line, Station, LostItem, Match
-from app.services.embedding import get_embedding
-from app.services.matcher import find_similar_items
-from app.services.station_service import StationService, build_search_query
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -28,6 +20,29 @@ bot = Bot(token=config.BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
+API_BASE_URL = config.API_BASE_URL.rstrip("/")
+
+async def api_post(endpoint: str, json_data: dict, token: str = None):
+    headers = {"Authorization": token} if token else {}
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.post(f"{API_BASE_URL}{endpoint}", json=json_data, headers=headers, timeout=15)
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPError as e:
+            logger.error(f"API post error: {str(e)}")
+            raise ValueError(str(e))
+
+async def api_get(endpoint: str, params: dict = None, token: str = None):
+    headers = {"Authorization": token} if token else {}
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.get(f"{API_BASE_URL}{endpoint}", params=params, headers=headers, timeout=15)
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPError as e:
+            logger.error(f"API get error: {str(e)}")
+            raise ValueError(str(e))
 
 class LostItemForm(StatesGroup):
     description = State()
@@ -35,7 +50,6 @@ class LostItemForm(StatesGroup):
     line = State()
     station = State()
     confirm = State()
-
 
 def get_date_keyboard() -> InlineKeyboardMarkup:
     today = datetime.now().date()
@@ -47,7 +61,6 @@ def get_date_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="Ввести вручную", callback_data="date_manual")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
-
 
 def get_thisweek_keyboard() -> InlineKeyboardMarkup:
     today = datetime.now().date()
@@ -65,45 +78,29 @@ def get_thisweek_keyboard() -> InlineKeyboardMarkup:
     buttons.append([InlineKeyboardButton(text="Назад", callback_data="date_back")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-
 async def get_lines_keyboard() -> InlineKeyboardMarkup:
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(select(Line).order_by(Line.id))
-        lines = result.scalars().all()
-    buttons = []
-    for line in lines:
-        if line.id in [1, 2, 3, 5, 6, 7, 9, 11]:
-            buttons.append([
-                InlineKeyboardButton(
-                    text=f"{line.color} {line.name}",
-                    callback_data=f"line_{line.id}"
-                )
-            ])
+    try:
+        lines = await api_get("/lines")
+    except ValueError:
+        return InlineKeyboardMarkup(inline_keyboard=[])
+    buttons = [[InlineKeyboardButton(
+                    text=f"{line['color']} {line['name']}",
+                    callback_data=f"line_{line['id']}"
+                )] for line in lines]
     buttons.append([InlineKeyboardButton(text="Поиск по названию", callback_data="station_search")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-
 async def get_stations_keyboard(line_id: int, page: int = 0) -> InlineKeyboardMarkup:
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(Station)
-            .where(Station.line_id == line_id)
-            .order_by(Station.order_number)
-        )
-        stations = result.scalars().all()
-    per_page = 8
-    total_pages = (len(stations) + per_page - 1) // per_page
-    start = page * per_page
-    end = start + per_page
-    page_stations = stations[start:end]
-    buttons = []
-    for station in page_stations:
-        buttons.append([
-            InlineKeyboardButton(
-                text=station.name,
-                callback_data=f"station_{station.id}"
-            )
-        ])
+    try:
+        stations_resp = await api_get("/stations", {"line_id": line_id, "page": page, "per_page": 8})
+    except ValueError:
+        return InlineKeyboardMarkup(inline_keyboard=[])
+    stations = stations_resp.get("stations", [])
+    total_pages = stations_resp.get("total_pages", 1)
+    buttons = [[InlineKeyboardButton(
+                text=station["name"],
+                callback_data=f"station_{station['id']}"
+            )] for station in stations]
     nav_buttons = []
     if page > 0:
         nav_buttons.append(InlineKeyboardButton(text="<", callback_data=f"line_{line_id}_page_{page - 1}"))
@@ -115,55 +112,52 @@ async def get_stations_keyboard(line_id: int, page: int = 0) -> InlineKeyboardMa
     buttons.append([InlineKeyboardButton(text="К линиям", callback_data="back_to_lines")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-
 @dp.startup()
 async def on_startup():
     logger.info("Starting bot...")
-    await init_db()
-    logger.info("Bot started")
-
 
 @dp.shutdown()
 async def on_shutdown():
-    logger.info("Stopping bot...")
-    await close_db()
     await bot.session.close()
     logger.info("Bot stopped")
 
-
-def get_start_keyboard() -> InlineKeyboardMarkup:
-    buttons = [
-        [InlineKeyboardButton(text="Сообщить о потере", callback_data="start_lost")],
-        [InlineKeyboardButton(text="Мои заявки", callback_data="start_my")],
-        [InlineKeyboardButton(text="Помощь", callback_data="start_help")]
+def get_main_keyboard() -> ReplyKeyboardMarkup:
+    keyboard = [
+        [KeyboardButton(text="/lost - Сообщить о потере")],
+        [KeyboardButton(text="/my - Мои заявки")],
+        [KeyboardButton(text="/help - Помощь")]
     ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     telegram_id = message.from_user.id
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(User).where(User.telegram_id == telegram_id)
-        )
-        user = result.scalar_one_or_none()
-        if not user:
-            user = User(
-                telegram_id=telegram_id,
-                token=f"tg_{telegram_id}_{datetime.now().timestamp()}"
-            )
-            session.add(user)
-            await session.commit()
-            await session.refresh(user)
-            logger.info(f"Created new user: id={user.id}, telegram_id={user.telegram_id}")
-        await state.update_data(user_id=user.id)
+    user_id = None
+    token = None
+    try:
+        user_resp = await api_get(f"/users/by-telegram/{telegram_id}")
+        user_id = user_resp["id"]
+        token = user_resp["token"]
+    except ValueError as e:
+        if "404" in str(e):
+            try:
+                user_resp = await api_post("/users", {"telegram_id": telegram_id})
+                user_id = user_resp["id"]
+                token = user_resp["token"]
+            except ValueError as e:
+                logger.error(str(e))
+                await message.answer("Ошибка создания пользователя. Попробуйте позже.", reply_markup=get_main_keyboard())
+                return
+        else:
+            logger.error(str(e))
+            await message.answer("Ошибка связи с сервером. Попробуйте позже.", reply_markup=get_main_keyboard())
+            return
+    await state.update_data(user_id=user_id, token=token)
     await message.answer(
         "Здравствуйте! Этот бот помогает найти потерянные вещи в метро.\n"
         "Вы можете сообщить о потере, посмотреть статус своих заявок и получить информацию.",
-        reply_markup=get_start_keyboard()
+        reply_markup=get_main_keyboard()
     )
-
 
 @dp.callback_query(lambda c: c.data == "start_lost")
 async def start_lost(callback: CallbackQuery, state: FSMContext):
@@ -171,13 +165,11 @@ async def start_lost(callback: CallbackQuery, state: FSMContext):
     await cmd_lost(callback.message, state)
     await callback.answer()
 
-
 @dp.callback_query(lambda c: c.data == "start_my")
 async def start_my(callback: CallbackQuery):
     await callback.message.delete()
     await cmd_my(callback.message)
     await callback.answer()
-
 
 @dp.callback_query(lambda c: c.data == "start_help")
 async def start_help(callback: CallbackQuery):
@@ -185,16 +177,39 @@ async def start_help(callback: CallbackQuery):
     await cmd_help(callback.message)
     await callback.answer()
 
-
 @dp.message(Command("lost"))
 async def cmd_lost(message: Message, state: FSMContext):
+    data = await state.get_data()
+    if not data.get('token'):
+        telegram_id = message.from_user.id
+        try:
+            user_resp = await api_get(f"/users/by-telegram/{telegram_id}")
+            await state.update_data(user_id=user_resp["id"], token=user_resp["token"])
+        except ValueError as e:
+            if "404" in str(e):
+                try:
+                    user_resp = await api_post("/users", {"telegram_id": telegram_id})
+                    await state.update_data(user_id=user_resp["id"], token=user_resp["token"])
+                except ValueError as e:
+                    logger.error(str(e))
+                    await message.answer("Ошибка создания пользователя. Попробуйте позже.", reply_markup=get_main_keyboard())
+                    return
+            else:
+                logger.error(str(e))
+                await message.answer("Ошибка связи с сервером. Попробуйте позже.", reply_markup=get_main_keyboard())
+                return
     await state.set_state(LostItemForm.description)
     await message.answer(
         "Опишите потерянную вещь как можно подробнее.\n"
-        "Например: чёрный зонт-трость с деревянной ручкой",
-        reply_markup=ReplyKeyboardRemove()
+        "Например: чёрный зонт-трость с деревянной ручкой\n"
+        "/cancel - отменить",
+        reply_markup=get_main_keyboard()
     )
 
+@dp.message(Command("cancel"))
+async def cmd_cancel(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Действие отменено.", reply_markup=get_main_keyboard())
 
 @dp.message(LostItemForm.description)
 async def process_description(message: Message, state: FSMContext):
@@ -203,11 +218,7 @@ async def process_description(message: Message, state: FSMContext):
         return
     await state.update_data(description=message.text)
     await state.set_state(LostItemForm.date)
-    await message.answer(
-        "Когда вы потеряли вещь?",
-        reply_markup=get_date_keyboard()
-    )
-
+    await message.answer("Когда вы потеряли вещь?", reply_markup=get_date_keyboard())
 
 @dp.callback_query(LostItemForm.date)
 async def process_date_callback(callback: CallbackQuery, state: FSMContext):
@@ -239,51 +250,47 @@ async def process_date_callback(callback: CallbackQuery, state: FSMContext):
             loss_date = datetime.strptime(date_str, "%d%m%Y").date()
             await validate_and_set_date(callback.message, state, loss_date)
             await callback.message.delete()
-        except ValueError:
+        except ValueError as e:
+            logger.error(f"Date parse error: {str(e)}")
             await callback.answer("Ошибка формата даты", show_alert=True)
-    await callback.answer()
-
+        await callback.answer()
 
 @dp.message(LostItemForm.date)
 async def process_date_manual(message: Message, state: FSMContext):
+    input_text = message.text.strip()
     try:
-        loss_date = datetime.strptime(message.text.strip(), "%d.%m.%Y").date()
+        loss_date = datetime.strptime(input_text, "%d.%m.%Y").date()
         await validate_and_set_date(message, state, loss_date)
     except ValueError:
-        await message.answer("Неверный формат даты. Используйте ДД.ММ.ГГГГ")
+        await message.answer("Неверный формат даты. Используйте ДД.ММ.ГГГГ, например 15.01.2026. Попробуйте заново.")
 
-
-async def validate_and_set_date(message: Message, state: FSMContext, loss_date: datetime.date):
+async def validate_and_set_date(message: Message, state: FSMContext, loss_date: date):
     today = datetime.now().date()
     if loss_date > today:
-        await message.answer("Дата потери не может быть в будущем")
+        await message.answer("Дата потери не может быть в будущем. Попробуйте ввести дату заново.")
         return
-    if (today - loss_date).days > 30:
-        await message.answer("Вы потеряли вещь больше месяца назад. Мы попробуем найти, но шанс невелик.")
+    delta_days = (today - loss_date).days
+    if delta_days > 30:
+        await message.answer(f"Вы потеряли вещь {delta_days} дней назад. Шанс найти низкий, но мы попробуем.")
     await state.update_data(loss_date=loss_date)
     await state.set_state(LostItemForm.line)
     keyboard = await get_lines_keyboard()
-    await message.answer(
-        "Выберите линию метро, на которой потеряли вещь:",
-        reply_markup=keyboard
-    )
-
+    if not keyboard.inline_keyboard:
+        await message.answer("Ошибка загрузки линий метро. Попробуйте позже.")
+        await state.clear()
+        return
+    await message.answer("Выберите линию метро, на которой потеряли вещь:", reply_markup=keyboard)
 
 @dp.callback_query(LostItemForm.line)
 async def process_line_selection(callback: CallbackQuery, state: FSMContext):
     data = callback.data
     if data == "back_to_lines":
         keyboard = await get_lines_keyboard()
-        await callback.message.edit_text(
-            "Выберите линию метро:",
-            reply_markup=keyboard
-        )
+        await callback.message.edit_text("Выберите линию метро:", reply_markup=keyboard)
         await callback.answer()
         return
     if data == "station_search":
-        await callback.message.edit_text(
-            "Введите название станции (хотя бы 3 символа):"
-        )
+        await callback.message.edit_text("Введите название станции (хотя бы 3 символа):")
         await state.set_state(LostItemForm.station)
         await callback.answer()
         return
@@ -292,17 +299,14 @@ async def process_line_selection(callback: CallbackQuery, state: FSMContext):
         line_id = int(parts[1])
         page = int(parts[3]) if len(parts) > 3 and parts[2] == "page" else 0
         keyboard = await get_stations_keyboard(line_id, page)
-        await callback.message.edit_text(
-            "Выберите станцию:",
-            reply_markup=keyboard
-        )
+        await callback.message.edit_text("Выберите станцию:", reply_markup=keyboard)
         await callback.answer()
+        return
     if data.startswith("station_"):
         station_id = int(data.split("_")[1])
         await finish_station_selection(callback.message, state, station_id)
         await callback.message.delete()
         await callback.answer()
-
 
 @dp.message(LostItemForm.station)
 async def process_station_search(message: Message, state: FSMContext):
@@ -310,59 +314,46 @@ async def process_station_search(message: Message, state: FSMContext):
     if len(query) < 3:
         await message.answer("Введите минимум 3 символа")
         return
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(Station)
-            .where(Station.name.ilike(f"%{query}%"))
-            .order_by(Station.name)
-            .limit(10)
-        )
-        stations = result.scalars().all()
+    try:
+        stations = await api_get("/stations/search", {"query": query, "limit": 10})
+    except ValueError:
+        await message.answer("Ошибка поиска станций. Попробуйте позже.")
+        return
     if not stations:
         await message.answer("Станции с таким названием не найдены. Попробуйте ещё раз или /cancel")
         return
-    buttons = []
-    for station in stations:
-        async with AsyncSessionLocal() as session:
-            line = await session.get(Line, station.line_id)
-            line_name = line.name if line else ""
-        buttons.append([
-            InlineKeyboardButton(
-                text=f"{station.name} ({line_name})",
-                callback_data=f"station_{station.id}"
-            )
-        ])
+    buttons = [[InlineKeyboardButton(
+                text=f"{station['name']} ({station.get('line_name', '')})",
+                callback_data=f"station_{station['id']}"
+            )] for station in stations]
     buttons.append([InlineKeyboardButton(text="К линиям", callback_data="back_to_lines")])
     await message.answer(
         "Найденные станции:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
     )
 
-
 async def finish_station_selection(message: Message, state: FSMContext, station_id: int):
-    async with AsyncSessionLocal() as session:
-        station = await session.get(Station, station_id)
-        line = await session.get(Line, station.line_id)
-        station_name = f"{station.name} ({line.color} линия)" if line else station.name
-    await state.update_data(station_id=station_id, station_name=station_name)
+    try:
+        station = await api_get(f"/stations/{station_id}")
+    except ValueError:
+        await message.answer("Ошибка получения информации о станции. Попробуйте позже.")
+        return
+    await state.update_data(station_id=station_id, station_name=station["name"])
     data = await state.get_data()
     description = data.get('description')
     loss_date = data.get('loss_date')
     await message.answer(
         f"Проверьте данные:\n\n"
         f"Описание: {description}\n"
-        f"Дата потери: {loss_date.strftime('%d.%m.%Y')}\n"
-        f"Станция: {station_name}\n\n"
+        f"Дата потери: {loss_date.strftime('%d.%m.%Y') if loss_date else '—'}\n"
+        f"Станция: {station['name']}\n\n"
         f"Всё верно?",
         reply_markup=ReplyKeyboardMarkup(
-            keyboard=[
-                [KeyboardButton(text="Да"), KeyboardButton(text="Нет, заново")]
-            ],
+            keyboard=[[KeyboardButton(text="Да"), KeyboardButton(text="Нет, заново")]],
             resize_keyboard=True
         )
     )
     await state.set_state(LostItemForm.confirm)
-
 
 def get_after_claim_keyboard() -> InlineKeyboardMarkup:
     buttons = [
@@ -372,127 +363,107 @@ def get_after_claim_keyboard() -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-
 @dp.message(LostItemForm.confirm)
 async def process_confirm(message: Message, state: FSMContext):
     if message.text.lower() in ["нет, заново", "нет"]:
         await state.clear()
-        await message.answer(
-            "Заявка отменена.",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        await message.answer(
-            "Что хотите сделать дальше?",
-            reply_markup=get_after_claim_keyboard()
-        )
+        await message.answer("Заявка отменена.", reply_markup=ReplyKeyboardRemove())
+        await message.answer("Что хотите сделать дальше?", reply_markup=get_main_keyboard())
         return
-    if message.text.lower() not in ["да", "да"]:
+    if message.text.lower() != "да":
         await message.answer("Пожалуйста, выберите Да или Нет")
         return
     data = await state.get_data()
-    user_id = data.get('user_id')
-    async with AsyncSessionLocal() as session:
-        embedding = await get_embedding(data['description'])
-        lost_item = LostItem(
-            user_id=user_id,
-            description=data['description'],
-            embedding=embedding,
-            loss_date=data['loss_date'],
-            station_id=data['station_id'],
-            status='pending'
-        )
-        session.add(lost_item)
-        await session.commit()
-        similar_items = await find_similar_items(
-            session=session,
-            query_embedding=embedding,
-            station_id=data['station_id'],
-            loss_date=data['loss_date'],
-            limit=5,
-            similarity_threshold=0.65,
-            days_delta=3
-        )
-        if similar_items:
-            lost_item.status = 'matched'
-            for found_item, similarity in similar_items[:3]:
-                match = Match(
-                    lost_item_id=lost_item.id,
-                    found_item_id=found_item.id,
-                    similarity=similarity,
-                    status='pending'
-                )
-                session.add(match)
-            await session.commit()
-            response = "Мы нашли похожие вещи!\n\n"
-            for i, (found_item, similarity) in enumerate(similar_items[:3], 1):
-                station = await session.get(Station, found_item.station_id)
-                line = await session.get(Line, station.line_id) if station else None
-                station_str = f"{station.name} ({line.color})" if station and line else "неизвестно"
-                response += (
-                    f"{i}. {found_item.description}\n"
-                    f"   Найдена: {station_str}\n"
-                    f"   Дата находки: {found_item.found_date.strftime('%d.%m.%Y')}\n"
-                    f"   Совпадение: {similarity:.1%}\n\n"
-                )
-            response += "Свяжитесь с сотрудниками метро на указанной станции."
-        else:
-            response = (
-                "Пока не нашли похожих вещей.\n\n"
-                "Мы сохранили вашу заявку и будем проверять новые находки.\n"
-                "Вам придёт уведомление, когда появится подходящая вещь."
-            )
-        await message.answer(response, reply_markup=ReplyKeyboardRemove())
-        await message.answer(
-            "Что хотите сделать дальше?",
-            reply_markup=get_after_claim_keyboard()
-        )
+    token = data.get('token')
+    if not token:
+        telegram_id = message.from_user.id
+        try:
+            user_resp = await api_get(f"/users/by-telegram/{telegram_id}")
+            token = user_resp["token"]
+            await state.update_data(token=token, user_id=user_resp["id"])
+        except ValueError as e:
+            if "404" in str(e):
+                try:
+                    user_resp = await api_post("/users", {"telegram_id": telegram_id})
+                    token = user_resp["token"]
+                    await state.update_data(user_id=user_resp["id"], token=token)
+                except ValueError as e:
+                    logger.error(str(e))
+                    await message.answer("Ошибка создания пользователя. Попробуйте позже.")
+                    await state.clear()
+                    return
+            else:
+                logger.error(str(e))
+                await message.answer("Ошибка связи с сервером. Попробуйте позже.")
+                await state.clear()
+                return
+    logger.info(f"DEBUG: token перед отправкой = {token}")
+    payload = {
+        "user_id": data.get('user_id'),
+        "description": data['description'],
+        "loss_date": data['loss_date'].isoformat(),
+        "station_id": data['station_id']
+    }
+    try:
+        result = await api_post("/lost-items", payload, token=token)
+        await message.answer(result['message'], reply_markup=ReplyKeyboardRemove())
+    except ValueError as e:
+        logger.error(str(e))
+        await message.answer("Ошибка обработки заявки. Попробуйте позже.")
+    await message.answer("Что хотите сделать дальше?", reply_markup=get_main_keyboard())
     await state.clear()
-
 
 @dp.message(Command("my"))
 async def cmd_my(message: Message):
     telegram_id = message.from_user.id
-    async with AsyncSessionLocal() as session:
-        user = await session.execute(
-            select(User).where(User.telegram_id == telegram_id)
-        )
-        user = user.scalar_one_or_none()
-        if not user:
-            await message.answer("У вас пока нет заявок")
+    try:
+        user_resp = await api_get(f"/users/by-telegram/{telegram_id}")
+        user_id = user_resp["id"]
+        token = user_resp["token"]
+    except ValueError as e:
+        if "404" in str(e):
+            try:
+                user_resp = await api_post("/users", {"telegram_id": telegram_id})
+                user_id = user_resp["id"]
+                token = user_resp["token"]
+            except ValueError as e:
+                logger.error(str(e))
+                await message.answer("Ошибка создания пользователя. Попробуйте позже.", reply_markup=get_main_keyboard())
+                return
+        else:
+            logger.error(str(e))
+            await message.answer("Ошибка получения пользователя. Попробуйте позже.", reply_markup=get_main_keyboard())
             return
-        lost_items = await session.execute(
-            select(LostItem)
-            .where(LostItem.user_id == user.id)
-            .order_by(LostItem.created_at.desc())
-            .limit(5)
+    try:
+        items = await api_get(f"/lost-items/{user_id}", token=token)
+    except ValueError as e:
+        logger.error(str(e))
+        await message.answer("Ошибка получения заявок. Попробуйте позже.", reply_markup=get_main_keyboard())
+        return
+    if not items:
+        await message.answer("У вас пока нет заявок", reply_markup=get_main_keyboard())
+        return
+    response = "Ваши последние заявки:\n\n"
+    status_display = {
+        'pending': 'Ожидает проверки',
+        'matched': 'Найдены совпадения',
+        'notified': 'Уведомление отправлено',
+        'closed': 'Заявка закрыта'
+    }
+    for item in items[:5]:
+        try:
+            loss_date = datetime.fromisoformat(item['loss_date']).strftime('%d.%m.%Y')
+        except:
+            loss_date = item['loss_date']
+        status_text = status_display.get(item['status'], item['status'])
+        response += (
+            f"• {item['description'][:50]}...\n"
+            f" Дата потери: {loss_date}\n"
+            f" Станция: {item.get('station_name', 'неизвестно')}\n"
+            f" Статус: {status_text}\n\n"
         )
-        lost_items = lost_items.scalars().all()
-        if not lost_items:
-            await message.answer("У вас пока нет заявок")
-            return
-        response = "Ваши последние заявки:\n\n"
-        status_display = {
-            'pending': 'Ожидает проверки',
-            'matched': 'Найдены совпадения',
-            'notified': 'Уведомление отправлено',
-            'closed': 'Заявка закрыта'
-        }
-        for item in lost_items:
-            station = await session.get(Station, item.station_id)
-            station_str = station.name if station else "неизвестно"
-            status_text = status_display.get(item.status, item.status)
-            response += (
-                f"• {item.description[:50]}...\n"
-                f"  Дата потери: {item.loss_date.strftime('%d.%m.%Y')}\n"
-                f"  Станция: {station_str}\n"
-                f"  Статус: {status_text}\n\n"
-            )
-        await message.answer(response)
-        await message.answer(
-            "Что хотите сделать дальше?",
-            reply_markup=get_after_claim_keyboard()
-        )
-
+    await message.answer(response, reply_markup=get_main_keyboard())
+    await message.answer("Что хотите сделать дальше?", reply_markup=get_main_keyboard())
 
 @dp.message(Command("help"))
 async def cmd_help(message: Message):
@@ -501,10 +472,11 @@ async def cmd_help(message: Message):
         "/start - начать работу\n"
         "/lost - сообщить о потере\n"
         "/my - мои заявки\n"
-        "/help - помощь\n\n"
-        "Если вы нашли вещь, сдайте её сотруднику метро."
+        "/help - помощь\n"
+        "/cancel - отменить текущее действие\n\n"
+        "Если вы нашли вещь, сдайте её сотруднику метро.",
+        reply_markup=get_main_keyboard()
     )
-
 
 @dp.callback_query(lambda c: c.data == "new_claim")
 async def callback_new_claim(callback: CallbackQuery, state: FSMContext):
@@ -512,13 +484,11 @@ async def callback_new_claim(callback: CallbackQuery, state: FSMContext):
     await cmd_lost(callback.message, state)
     await callback.answer()
 
-
 @dp.callback_query(lambda c: c.data == "my_claims")
 async def callback_my_claims(callback: CallbackQuery):
     await callback.message.delete()
     await cmd_my(callback.message)
     await callback.answer()
-
 
 @dp.callback_query(lambda c: c.data == "help")
 async def callback_help(callback: CallbackQuery):
@@ -526,18 +496,16 @@ async def callback_help(callback: CallbackQuery):
     await cmd_help(callback.message)
     await callback.answer()
 
-
 @dp.message()
 async def handle_unknown(message: Message):
     await message.answer(
         "Я не понимаю эту команду.\n"
-        "Используйте /help для списка команд."
+        "Используйте /help для списка команд.",
+        reply_markup=get_main_keyboard()
     )
-
 
 async def main():
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
